@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, "fix/**"]
+  pull_request:
+
+jobs:
+  python-tests:
+    name: Python ${{ matrix.python-version }} (pytest)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install hash-pinned Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements.lock
+          pip install sqlalchemy playwright
+          playwright install --with-deps chromium
+
+      - name: Provide Compose interpolation placeholders
+        run: cp .env.example .env
+
+      - name: Run pytest
+        env:
+          MEILISEARCH_MASTER_KEY: e2e-test-meili-key
+        run: python -m pytest -q
+
+  typescript-tests:
+    name: TypeScript Tests (vitest & tsx)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install workspace dependencies (strict lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Run workspace test suites (L4 Reasoning, L6 Output, L8 Orchestration)
+        run: pnpm test
+
+      - name: Run L5 Action connectors Vitest suite
+        run: pnpm run test:connectors
+
+      - name: Run L8 Orchestration scenario tests
+        run: pnpm run test:orchestration
+
+      - name: Run L18 Interaction surface tests
+        run: pnpm run test:surface
+
+  license-and-hygiene:
+    name: License, Lockfile, Image Pinning & Secret Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install hash-pinned Python dependencies for metadata inspection
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements.lock
+
+      - name: Run license, lockfile, and compose hygiene check
+        run: python scripts/check_licenses.py
+
+      - name: Validate docker-compose configuration with example placeholders
+        run: |
+          cp .env.example .env
+          docker compose config -q
+
+  compose-e2e:
+    name: Compose E2E (Qdrant v1.20, Apache AGE, Temporal, Keycloak, Valkey)
+    runs-on: ubuntu-latest
+    needs: [python-tests, license-and-hygiene]
+    env:
+      MEILISEARCH_MASTER_KEY: e2e-test-meili-key
+      NANGO_SECRET_KEY: e2e-test-nango-secret
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: e2e-admin-pass
+      INFISICAL_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef"
+      LIVEKIT_KEYS: "e2ekey: e2esecret"
+      TEMPORAL_LIVE_URL: localhost:7233
+      POSTGRES_PASSWORD: e2e-postgres-pass
+      POSTHOG_SECRET: e2e-test-posthog-secret
+      SVIX_JWT_SECRET: e2e-test-svix-jwt-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install hash-pinned Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements.lock
+          pip install sqlalchemy playwright
+          playwright install --with-deps chromium
+
+      - name: Provide Compose interpolation placeholders
+        run: cp .env.example .env
+
+      - name: Run local Compose E2E tests
+        env:
+          COMPOSE_E2E_AUTO_START: "1"
+        run: python -m pytest -m "live and not requires_provisioned_services" tests/integration/test_compose_stack_e2e.py -v -s --tb=short
+
+      - name: Dump compose logs on failure
+        if: failure()
+        env:
+          MEILISEARCH_MASTER_KEY: e2e-test-meili-key
+          NANGO_SECRET_KEY: e2e-test-nango-secret
+          KEYCLOAK_ADMIN: admin
+          KEYCLOAK_ADMIN_PASSWORD: e2e-admin-pass
+          INFISICAL_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef"
+          TEMPORAL_LIVE_URL: localhost:7233
+          LIVEKIT_KEYS: "e2ekey: e2esecret"
+          POSTGRES_PASSWORD: e2e-postgres-pass
+          POSTHOG_SECRET: e2e-test-posthog-secret
+          SVIX_JWT_SECRET: e2e-test-svix-jwt-secret
+        run: |
+          docker compose ps -a
+          docker compose logs --tail=80 valkey qdrant apache-age temporal keycloak

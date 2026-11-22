@@ -1,0 +1,29 @@
+{
+  "name": "central-intelligence",
+  "version": "1.0.0",
+  "description": "Central Intelligence — Aevum CI Brain (Layers 1-19)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "test": "turbo run test",
+    "test:reasoning": "pnpm --filter @central-intelligence/reasoning test",
+    "test:output": "pnpm --filter @central-intelligence/output test",
+    "test:connectors": "vitest run cognitive/action/connectors/__tests__ --pool=forks",
+    "test:orchestration": "pnpm --filter @central-intelligence/orchestration run test:all",
+    "test:surface": "node control/orchestration/node_modules/tsx/dist/cli.mjs --test surface/interaction/terminal/tests/opencode.test.ts surface/interaction/ide/tests/zed.test.ts",
+    "test:memory": "node -e \"require('child_process').spawnSync(process.platform === 'win32' ? '.\\\\.venv\\\\Scripts\\\\pytest.exe' : './.venv/bin/pytest', ['cognitive/memory/tests/', '-q'], { stdio: 'inherit' })\"",
+    "test:guardrails": "node -e \"require('child_process').spawnSync(process.platform === 'win32' ? '.\\\\.venv\\\\Scripts\\\\pytest.exe' : './.venv/bin/pytest', ['control/safety/guardrails/tests/', '-q'], { stdio: 'inherit' })\""
+  },
+  "devDependencies": {
+    "turbo": "^2.4.4",
+    "typescript": "^5.8.2",
+    "vitest": "^3.2.7"
+  },
+  "packageManager": "pnpm@10.30.3",
+  "dependencies": {
+    "@nangohq/node": "^0.72.4",
+    "nanoid": "^5.1.16"
+  }
+}

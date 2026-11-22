@@ -1,0 +1,13 @@
+models: []
+
+rails:
+  input:
+    flows:
+      - check jailbreak
+      - check toxicity
+      - check encoding injection
+  output:
+    flows:
+      - check factuality
+      - check hallucination
+
