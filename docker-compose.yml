@@ -1,54 +1,7 @@
-include:
-  - path: ./compose/signoz/pours/deployment/compose.yaml
-
-configs:
-  openmeter-config:
-    content: |
-      address: 0.0.0.0:8888
-      ingest:
-        kafka:
-          broker: kafka:29092
-          brokerAddressFamily: v4
-          socketKeepAliveEnable: true
-          topicMetadataRefreshInterval: 10s
-      aggregation:
-        clickhouse:
-          address: openmeter-clickhouse:9000
-          username: default
-          password: ${OPENMETER_CLICKHOUSE_PASSWORD:?OPENMETER_CLICKHOUSE_PASSWORD must be set}
-          database: openmeter
-      sink:
-        minCommitCount: 1
-        kafka:
-          brokers: kafka:29092
-          brokerAddressFamily: v4
-          socketKeepAliveEnable: true
-          topicMetadataRefreshInterval: 10s
-        dedupe:
-          enabled: true
-          driver: redis
-          config:
-            address: openmeter-redis:6379
-            database: 0
-            expiration: 768h
-      postgres:
-        url: postgres://openmeter:${OPENMETER_POSTGRES_PASSWORD:?OPENMETER_POSTGRES_PASSWORD must be set}@openmeter-postgres:5432/openmeter?sslmode=disable
-        autoMigrate: migration
-      meters:
-        - slug: token_consumption
-          description: AI token consumption
-          eventType: token_consumption
-          aggregation: SUM
-          valueProperty: $.total_tokens
-          groupBy:
-            model: $.model
-      notification:
-        enabled: false
-
 services:
-  # Vector Store for Memory Engine & Embeddings
+  # Vector Store for Memory Engine & Embeddings (Optional/Demo profile - default uses supabase-db pgvector)
   qdrant:
-    profiles: ["core", "lite", "standard", "enterprise"]
+    profiles: ["optional", "demo"]
     image: qdrant/qdrant:v1.20.0
     container_name: central-qdrant
     restart: unless-stopped
@@ -89,28 +42,7 @@ services:
       retries: 30
       start_period: 60s
 
-  # Global Fast Search Engine (MIT)
-  meilisearch:
-    profiles: ["optional"]
-    image: getmeili/meilisearch:v1.7.3
-    container_name: central-meilisearch
-    restart: unless-stopped
-    ports:
-      - "7700:7700"
-    environment:
-      - MEILI_MASTER_KEY=${MEILISEARCH_MASTER_KEY:?MEILISEARCH_MASTER_KEY must be set}
-      - MEILI_ENV=development
-      - MEILI_NO_ANALYTICS=true
-    volumes:
-      - meili_data:/meili_data
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:7700/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
-
-  # Open-source High-Throughput In-Memory Cache & Pub/Sub (Valkey - OSI BSD-3-Clause, optional Dragonfly alternative)
+  # Open-source High-Throughput In-Memory Cache & Pub/Sub (Valkey - OSI BSD-3-Clause)
   valkey:
     profiles: ["core", "lite", "standard", "enterprise"]
     image: valkey/valkey:8.0.2-alpine
@@ -126,6 +58,9 @@ services:
       - "6379:6379"
     volumes:
       - valkey_data:/data
+    networks:
+      - default
+      - agpl_quarantine_net
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -150,44 +85,7 @@ services:
       retries: 20
       start_period: 10s
 
-  # Graph Memory Tier (Tier 4) (BSL-1.1; optional profile — OSI default uses supabase-db with Apache AGE)
-  memgraph:
-    image: memgraph/memgraph-platform:2.14.1-memgraph2.14.1-lab2.11.1
-    container_name: central-memgraph
-    profiles: ["optional"]
-    restart: unless-stopped
-    ports:
-      - "7687:7687"
-      - "3000:3000"
-    environment:
-      - MEMGRAPH=--log-level=WARNING
-    volumes:
-      - memgraph_data:/var/lib/memgraph
-    healthcheck:
-      test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole > /dev/null 2>&1 || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
-
-  # GraphRAG Engine for L3 Knowledge
-  # LICENSE NOTICE: SSPL-v1 (non-OSI; optional profile — OSI default uses supabase-db Apache AGE)
-  falkordb:
-    image: falkordb/falkordb:v4.22.3
-    container_name: central-falkordb
-    profiles: ["optional"]
-    restart: unless-stopped
-    ports:
-      - "6380:6379"
-    volumes:
-      - falkordb_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 5s
-
+  # Graph tier is fully consolidated into supabase-db Apache AGE (Task A3)
   # Nango Federated OAuth Gateway for L5 Action
   # LICENSE NOTICE: Elastic-2.0 (source-available, non-OSI; optional profile only)
   nango:
@@ -256,30 +154,8 @@ services:
       - ./compose/otel/collector.yaml:/etc/otelcol/config.yaml:ro
     networks:
       - default
-      - signoz-network
-    depends_on:
-      ingester:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "/bin/busybox", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:13133/"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 15s
-
-  # Arize Phoenix for L11 Evaluation, Hallucination Detection & Tracing
-  # LICENSE NOTICE: Elastic-2.0 (source-available, non-OSI; optional profile only — OSI default uses otel-collector)
-  phoenix:
-    image: arizephoenix/phoenix:version-21.0.0
-    container_name: central-phoenix
-    profiles: ["optional"]
-    restart: unless-stopped
-    ports:
-      - "6006:6006"
-    volumes:
-      - phoenix_data:/root/.phoenix
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:6006/ || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -343,80 +219,6 @@ services:
       retries: 20
       start_period: 10s
 
-  # Infisical Vault for L12 Secret Management & Key Rotation (MIT)
-  infisical:
-    profiles: ["core", "standard", "enterprise"]
-    image: infisical/infisical:v0.167.8
-    container_name: central-infisical
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-        reservations:
-          memory: 128M
-    ports:
-      - "8083:8080"
-    environment:
-      - NODE_ENV=production
-      - ENCRYPTION_KEY=${INFISICAL_ENCRYPTION_KEY:?INFISICAL_ENCRYPTION_KEY must be set}
-      - AUTH_SECRET=${INFISICAL_AUTH_SECRET:?INFISICAL_AUTH_SECRET must be set}
-      - DB_CONNECTION_URI=postgres://infisical:${INFISICAL_POSTGRES_PASSWORD:?INFISICAL_POSTGRES_PASSWORD must be set}@supabase-db:5432/infisical
-      - REDIS_URL=redis://infisical-redis:6379
-      - SITE_URL=http://localhost:8083
-    depends_on:
-      supabase-db:
-        condition: service_healthy
-      infisical-redis:
-        condition: service_healthy
-    volumes:
-      - infisical_data:/data
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8080/api/status', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 60s
-
-  infisical-redis:
-    profiles: ["core", "standard", "enterprise"]
-    image: redis:7.4.7-alpine
-    container_name: central-infisical-redis
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 64M
-        reservations:
-          memory: 16M
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - infisical_redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 5s
-
-  # Hyperswitch Universal Payment Router for L13 Billing (Feature 13.13) (Apache-2.0)
-  hyperswitch:
-    profiles: ["optional"]
-    image: juspaydotin/hyperswitch-router:2026.11.13.1-standalone
-    container_name: central-hyperswitch
-    restart: unless-stopped
-    ports:
-      - "8090:8080"
-    environment:
-      - ROUTER_PORT=8080
-      - ENVIRONMENT=sandbox
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:8080/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 20s
-
   # LiveKit Real-Time WebRTC Audio/Video Server for L1 Perception (Task 1.1) (Apache-2.0)
   livekit:
     profiles: ["optional"]
@@ -456,6 +258,9 @@ services:
     volumes:
       - supabase_data:/var/lib/postgresql/data
       - ./compose/postgres/init-multi-db.sh:/docker-entrypoint-initdb.d/01-init-multi-db.sh:ro
+    networks:
+      - default
+      - agpl_quarantine_net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB:-postgres}"]
       interval: 5s
@@ -463,156 +268,11 @@ services:
       retries: 20
       start_period: 10s
 
-  # Unified Project Management & Docs Workspace (Huly - Task 19.1) (EPL-2.0)
-  huly:
-    profiles: ["optional"]
-    image: hardcoreeng/front:v0.7.432
-    container_name: central-huly
-    restart: unless-stopped
-    ports:
-      - "8086:8080"
-    environment:
-      - HULY_ENV=production
-    volumes:
-      - huly_data:/var/lib/huly
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:8080/ || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 20s
-
-  # Kafka Event Streaming Broker for L15 Messaging Dev/AutoMQ-compatible bus (Apache-2.0)
-  kafka:
-    profiles: ["core", "enterprise"]
-    image: apache/kafka:3.9.0
-    container_name: central-kafka
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 768M
-        reservations:
-          memory: 256M
-    ports:
-      - "9092:9092"
-    environment:
-      - KAFKA_NODE_ID=1
-      - KAFKA_PROCESS_ROLES=broker,controller
-      - KAFKA_LISTENERS=INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
-      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:29092,EXTERNAL://localhost:9092
-      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
-      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
-      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
-      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
-      - KAFKA_LOG_DIRS=/var/lib/kafka/data
-      - KAFKA_LOG_SEGMENT_BYTES=10485760
-      - KAFKA_LOG_RETENTION_BYTES=104857600
-    volumes:
-      - kafka_data:/var/lib/kafka/data
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/29092'"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 15s
-
-  # Svix Webhook Delivery Service for L15 Data & Event Webhooks (MIT)
-  svix:
-    profiles: ["optional"]
-    image: svix/svix-server:v1.105.0
-    container_name: central-svix
-    restart: unless-stopped
-    ports:
-      - "8071:8071"
-    environment:
-      - SVIX_JWT_SECRET=${SVIX_JWT_SECRET:?SVIX_JWT_SECRET must be set}
-      - WAIT_FOR=false
-    volumes:
-      - svix_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:8071/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
-
-  # Dragonfly High-Throughput Redis-Compatible Cache (BSL-1.1)
-  dragonfly:
-    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.26.1
-    container_name: central-dragonfly
-    profiles: ["optional"]
-    restart: unless-stopped
-    ports:
-      - "6381:6379"
-    volumes:
-      - dragonfly_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 5s
-
-  # OpenMeter Real-Time Metering & Token Ingestion for L13 Billing (Apache-2.0)
-  openmeter-postgres:
-    profiles: ["core", "enterprise"]
-    image: postgres:14.20-alpine3.23@sha256:14f02666642586a64d6fae8ef42d479fd76456a77c73ae8a626b8fe323b76d22
-    container_name: central-openmeter-postgres
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-        reservations:
-          memory: 64M
-    environment:
-      POSTGRES_USER: openmeter
-      POSTGRES_DB: openmeter
-      POSTGRES_PASSWORD: ${OPENMETER_POSTGRES_PASSWORD:?OPENMETER_POSTGRES_PASSWORD must be set}
-    volumes:
-      - openmeter_postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-d", "openmeter", "-U", "openmeter"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
-
-  openmeter-clickhouse:
-    profiles: ["core", "enterprise"]
-    image: clickhouse/clickhouse-server:25.12.3-alpine@sha256:74da41cd61db84f652c6364fd30d59e19b7276d34f7c82515f5f0e70d6f325da
-    container_name: central-openmeter-clickhouse
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 768M
-        reservations:
-          memory: 256M
-    environment:
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ${OPENMETER_CLICKHOUSE_PASSWORD:?OPENMETER_CLICKHOUSE_PASSWORD must be set}
-      CLICKHOUSE_DB: openmeter
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
-    volumes:
-      - openmeter_clickhouse_data:/var/lib/clickhouse
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "http://127.0.0.1:8123/ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 20s
-
-  openmeter-redis:
-    profiles: ["core", "enterprise"]
-    image: redis:7.4.7@sha256:c6e4a82ce60b829a72a21cc4ad4c1c274fa6962eb0d6ac698e8157cbc3fe16a4
-    container_name: central-openmeter-redis
+  # PgBouncer Connection Pooler for High Concurrency & HA (Task A11)
+  pgbouncer:
+    profiles: ["core", "lite", "standard", "enterprise"]
+    image: edoburu/pgbouncer:v1.23.1
+    container_name: central-pgbouncer
     restart: unless-stopped
     deploy:
       resources:
@@ -620,185 +280,80 @@ services:
           memory: 64M
         reservations:
           memory: 16M
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "50mb", "--maxmemory-policy", "noeviction"]
-    volumes:
-      - openmeter_redis_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-
-  openmeter:
-    profiles: ["core", "enterprise"]
-    image: ghcr.io/openmeterio/openmeter:v1.0.0-beta.236
-    container_name: central-openmeter
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-        reservations:
-          memory: 64M
-    command: ["openmeter", "--address", "0.0.0.0:8888", "--config", "/etc/openmeter/config.yaml"]
     ports:
-      - "127.0.0.1:8888:8888"
-    configs:
-      - source: openmeter-config
-        target: /etc/openmeter/config.yaml
-    depends_on:
-      kafka:
-        condition: service_healthy
-      openmeter-clickhouse:
-        condition: service_healthy
-      openmeter-postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "http://localhost:8888/api/v1/debug/metrics"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-
-  openmeter-sink-worker:
-    profiles: ["core", "enterprise"]
-    image: ghcr.io/openmeterio/openmeter:v1.0.0-beta.236
-    container_name: central-openmeter-sink-worker
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-        reservations:
-          memory: 64M
-    command: ["openmeter-sink-worker", "--config", "/etc/openmeter/config.yaml"]
-    configs:
-      - source: openmeter-config
-        target: /etc/openmeter/config.yaml
-    depends_on:
-      kafka:
-        condition: service_healthy
-      openmeter-clickhouse:
-        condition: service_healthy
-      openmeter:
-        condition: service_healthy
-      openmeter-redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "http://localhost:10000/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-
-  openmeter-balance-worker:
-    profiles: ["core", "enterprise"]
-    image: ghcr.io/openmeterio/openmeter:v1.0.0-beta.236
-    container_name: central-openmeter-balance-worker
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-        reservations:
-          memory: 64M
-    command: ["openmeter-balance-worker", "--config", "/etc/openmeter/config.yaml"]
-    configs:
-      - source: openmeter-config
-        target: /etc/openmeter/config.yaml
-    depends_on:
-      kafka:
-        condition: service_healthy
-      openmeter-clickhouse:
-        condition: service_healthy
-      openmeter:
-        condition: service_healthy
-      openmeter-redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "http://localhost:10000/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-
-  openmeter-billing-worker:
-    profiles: ["core", "enterprise"]
-    image: ghcr.io/openmeterio/openmeter:v1.0.0-beta.236
-    container_name: central-openmeter-billing-worker
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-        reservations:
-          memory: 64M
-    command: ["openmeter-billing-worker", "--config", "/etc/openmeter/config.yaml"]
-    configs:
-      - source: openmeter-config
-        target: /etc/openmeter/config.yaml
-    depends_on:
-      kafka:
-        condition: service_healthy
-      openmeter-clickhouse:
-        condition: service_healthy
-      openmeter:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "http://localhost:10000/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-
-  openmeter-jobs:
-    profiles: ["core", "enterprise"]
-    image: ghcr.io/openmeterio/openmeter:v1.0.0-beta.236
-    container_name: central-openmeter-jobs
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-        reservations:
-          memory: 64M
-    command: ["openmeter-jobs", "--config", "/etc/openmeter/config.yaml", "quickstart", "cron"]
-    configs:
-      - source: openmeter-config
-        target: /etc/openmeter/config.yaml
-    depends_on:
-      openmeter:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-      openmeter-clickhouse:
-        condition: service_healthy
-      openmeter-postgres:
-        condition: service_healthy
-
-  # Lago Open Source Metering & Billing Engine for L13 Billing (AGPLv3 quarantined network)
-  lago-postgres:
-    profiles: ["core", "standard", "enterprise"]
-    image: postgres:14-alpine
-    container_name: central-lago-postgres
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-        reservations:
-          memory: 64M
+      - "6432:6432"
     environment:
-      POSTGRES_DB: lago
-      POSTGRES_USER: lago
-      POSTGRES_PASSWORD: ${LAGO_POSTGRES_PASSWORD:?LAGO_POSTGRES_PASSWORD must be set}
-      PGDATA: /data/postgres
-    volumes:
-      - lago_postgres_data:/data/postgres
+      - DB_USER=postgres
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - DB_HOST=supabase-db
+      - DB_PORT=5432
+      - DB_NAME=*
+      - POOL_MODE=transaction
+      - MAX_CLIENT_CONN=200
+      - DEFAULT_POOL_SIZE=25
+      - AUTH_TYPE=plain
     networks:
+      - default
       - agpl_quarantine_net
+    depends_on:
+      supabase-db:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "lago", "-d", "lago"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 6432 || exit 1"]
       interval: 5s
-      timeout: 5s
+      timeout: 3s
       retries: 20
-      start_period: 10s
+
+  # Tier 3 Dynamic Router Service (Task A11) (~50 MB RSS)
+  tier-router:
+    profiles: ["core", "lite", "standard", "enterprise"]
+    image: python:3.12-alpine
+    container_name: central-tier-router
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 16M
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./platform_infra/routing/tier_router.py:/app/tier_router.py:ro
+    working_dir: /app
+    command: ["python", "tier_router.py"]
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8089/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # NATS JetStream Event & Messaging Broker (Task A7) (Apache-2.0)
+  nats:
+    profiles: ["core", "standard", "enterprise"]
+    image: nats:2.10-alpine
+    container_name: central-nats
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 32M
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
 
   lago-redis:
     profiles: ["core", "standard", "enterprise"]
@@ -833,7 +388,7 @@ services:
       LAGO_ORG_NAME: "Central Intelligence"
       LAGO_ORG_USER_EMAIL: "admin@central-intelligence.local"
       LAGO_ORG_USER_PASSWORD: "SuperSecurePass123!@#"
-      DATABASE_URL: postgresql://lago:${LAGO_POSTGRES_PASSWORD:?LAGO_POSTGRES_PASSWORD must be set}@lago-postgres:5432/lago?search_path=public
+      DATABASE_URL: postgresql://lago:${LAGO_POSTGRES_PASSWORD:?LAGO_POSTGRES_PASSWORD must be set}@supabase-db:5432/lago?search_path=public
       REDIS_URL: redis://lago-redis:6379
       SECRET_KEY_BASE: ${LAGO_SECRET_KEY_BASE:?LAGO_SECRET_KEY_BASE must be set}
       RAILS_ENV: production
@@ -845,9 +400,10 @@ services:
     volumes:
       - lago_storage_data:/app/storage
     networks:
+      - default
       - agpl_quarantine_net
     depends_on:
-      lago-postgres:
+      supabase-db:
         condition: service_healthy
       lago-redis:
         condition: service_healthy
@@ -868,10 +424,10 @@ services:
       - "3002:3000"
     environment:
       - LAGO_API_URL=http://lago:3000
-      - DATABASE_URL=postgresql://lago:${LAGO_POSTGRES_PASSWORD:?LAGO_POSTGRES_PASSWORD must be set}@lago-postgres:5432/lago?search_path=public
+      - DATABASE_URL=postgresql://lago:${LAGO_POSTGRES_PASSWORD:?LAGO_POSTGRES_PASSWORD must be set}@supabase-db:5432/lago?search_path=public
       - REDIS_URL=redis://lago-redis:6379
       - SECRET_KEY_BASE=${LAGO_SECRET_KEY_BASE:?LAGO_SECRET_KEY_BASE must be set}
-      - RAILS_ENV=production
+      - RAILS_ENV: production
       - RAILS_LOG_TO_STDOUT=true
       - LAGO_FRONT_URL=http://localhost:3002
       - LAGO_RSA_PRIVATE_KEY=${LAGO_RSA_PRIVATE_KEY:?LAGO_RSA_PRIVATE_KEY must be set}
@@ -887,7 +443,7 @@ services:
       - default
       - agpl_quarantine_net
     depends_on:
-      lago-postgres:
+      supabase-db:
         condition: service_healthy
       lago-redis:
         condition: service_healthy
@@ -914,7 +470,7 @@ services:
     command: ["./scripts/start.worker.sh"]
     environment:
       - LAGO_API_URL=http://lago:3000
-      - DATABASE_URL=postgresql://lago:${LAGO_POSTGRES_PASSWORD:?LAGO_POSTGRES_PASSWORD must be set}@lago-postgres:5432/lago?search_path=public
+      - DATABASE_URL=postgresql://lago:${LAGO_POSTGRES_PASSWORD:?LAGO_POSTGRES_PASSWORD must be set}@supabase-db:5432/lago?search_path=public
       - REDIS_URL=redis://lago-redis:6379
       - SECRET_KEY_BASE=${LAGO_SECRET_KEY_BASE:?LAGO_SECRET_KEY_BASE must be set}
       - RAILS_ENV=production
@@ -932,6 +488,7 @@ services:
     volumes:
       - lago_storage_data:/app/storage
     networks:
+      - default
       - agpl_quarantine_net
     depends_on:
       lago:
@@ -942,169 +499,21 @@ services:
       timeout: 10s
       retries: 20
 
-  # Uptime Kuma Self-Hosted Status & Service Monitoring for L14 Observability (MIT)
-  uptime-kuma:
-    profiles: ["optional"]
-    image: louislam/uptime-kuma:1.23.13
-    container_name: central-uptime-kuma
-    restart: unless-stopped
-    ports:
-      - "3001:3001"
-    volumes:
-      - uptime_kuma_data:/app/data
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:3001/ || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
-
-  # PostHog Product Analytics & Event Funnels for L14 Observability (MIT)
-  posthog:
-    profiles: ["optional"]
-    image: posthog/posthog:latest-release
-    container_name: central-posthog
-    restart: unless-stopped
-    ports:
-      - "8095:8000"
-    environment:
-      - POSTHOG_SECRET=${POSTHOG_SECRET:?POSTHOG_SECRET must be set}
-    volumes:
-      - posthog_data:/var/lib/posthog
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:8000/_health/ || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 25s
-
-  # Bytebase Database Schema Migration & Version Control for L17 Release (Apache-2.0)
-  bytebase:
-    profiles: ["core", "standard", "enterprise"]
-    image: bytebase/bytebase:3.24.1
-    container_name: central-bytebase
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-        reservations:
-          memory: 64M
-    ports:
-      - "5678:8080"
-    volumes:
-      - bytebase_data:/var/opt/bytebase
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:8080/healthz || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 15s
-
-  # LibreChat Multi-Provider Web Interface for L18 Interaction (MIT)
-  librechat-mongodb:
-    profiles: ["core", "ui", "enterprise"]
-    image: mongo:7.0.16-jammy
-    container_name: central-librechat-mongodb
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-        reservations:
-          memory: 128M
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${LIBRECHAT_MONGO_USER:?LIBRECHAT_MONGO_USER must be set}
-      MONGO_INITDB_ROOT_PASSWORD: ${LIBRECHAT_MONGO_PASSWORD:?LIBRECHAT_MONGO_PASSWORD must be set}
-    volumes:
-      - librechat_mongodb_data:/data/db
-    healthcheck:
-      test: ["CMD-SHELL", "mongosh --quiet --host 127.0.0.1 --username \"$$MONGO_INITDB_ROOT_USERNAME\" --password \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 }).ok' | grep -q 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 20s
-
-  librechat:
-    profiles: ["core", "ui", "enterprise"]
-    image: ghcr.io/danny-avila/librechat:v0.7.7
-    container_name: central-librechat
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 384M
-        reservations:
-          memory: 96M
-    ports:
-      - "3080:3080"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - HOST=0.0.0.0
-      - PORT=3080
-      - ALLOW_REGISTRATION=true
-      - REQUIRE_EMAIL_VERIFICATION=false
-      - ALLOW_EMAIL_LOGIN=true
-      - CONFIG_PATH=/app/librechat.yaml
-      - LIBRECHAT_GATEWAY_URL=${LIBRECHAT_GATEWAY_URL:?LIBRECHAT_GATEWAY_URL must be set}
-      - REASONING_GATEWAY_API_KEY=${REASONING_GATEWAY_API_KEY:?REASONING_GATEWAY_API_KEY must be set}
-      - MONGO_URI=mongodb://${LIBRECHAT_MONGO_USER:?LIBRECHAT_MONGO_USER must be set}:${LIBRECHAT_MONGO_PASSWORD:?LIBRECHAT_MONGO_PASSWORD must be set}@librechat-mongodb:27017/LibreChat?authSource=admin
-      - CREDS_KEY=${LIBRECHAT_CREDS_KEY:?LIBRECHAT_CREDS_KEY must be set}
-      - CREDS_IV=${LIBRECHAT_CREDS_IV:?LIBRECHAT_CREDS_IV must be set}
-      - JWT_SECRET=${LIBRECHAT_JWT_SECRET:?LIBRECHAT_JWT_SECRET must be set}
-      - JWT_REFRESH_SECRET=${LIBRECHAT_JWT_REFRESH_SECRET:?LIBRECHAT_JWT_REFRESH_SECRET must be set}
-    volumes:
-      - librechat_uploads:/app/uploads
-      - librechat_data:/app/data
-      - ./surface/interaction/web/librechat.yaml:/app/librechat.yaml:ro
-    depends_on:
-      librechat-mongodb:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3080/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 60s
-
 
 volumes:
   qdrant_data:
   ollama_models:
-  meili_data:
   valkey_data:
   chroma_data:
-  memgraph_data:
-  falkordb_data:
   nango_data:
   temporal_data:
-  phoenix_data:
   keycloak_data:
   openfga_data:
-  infisical_data:
   supabase_data:
   age_data:
-  huly_data:
-  kafka_data:
-  svix_data:
-  dragonfly_data:
-  signoz_data:
-  uptime_kuma_data:
-  posthog_data:
-  bytebase_data:
-  librechat_data:
-  infisical_postgres_data:
-  infisical_redis_data:
-  openmeter_postgres_data:
-  openmeter_clickhouse_data:
-  openmeter_redis_data:
-  lago_postgres_data:
+  nats_data:
   lago_redis_data:
   lago_storage_data:
-  librechat_mongodb_data:
-  librechat_uploads:
-  openfga_postgres_data:
 
 networks:
   default:
